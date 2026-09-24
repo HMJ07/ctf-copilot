@@ -44,14 +44,13 @@ def _parse_normal(text: str) -> ParseResult:
 
         port_match = _NORMAL_PORT_RE.match(line.strip())
         if port_match:
-            state = port_match.group("state")
-            if state not in ("open", "open|filtered"):
-                # We still record it, but most CTF workflows only care about open ports.
-                pass
+            # Every port is recorded regardless of state (open/closed/filtered) so the
+            # table view is a complete picture of the scan; the rule engine is
+            # responsible for only suggesting next steps on open ports.
             finding = PortFinding(
                 port=int(port_match.group("port")),
                 protocol=port_match.group("proto"),
-                state=state,
+                state=port_match.group("state"),
                 service=port_match.group("service"),
                 banner=(port_match.group("banner") or "").strip(),
                 host=current_host,

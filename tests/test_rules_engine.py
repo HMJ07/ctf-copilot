@@ -72,6 +72,26 @@ def test_suggest_all_dedupes_and_sorts_by_priority(engine):
     assert priorities[0] == 5  # vsftpd backdoor is the highest-priority hit
 
 
+def test_suggest_all_skips_closed_and_filtered_ports(engine):
+    ports = [
+        PortFinding(port=21, service="ftp", banner="vsftpd 2.3.4", state="closed"),
+        PortFinding(port=445, service="smb", banner="", state="filtered"),
+        PortFinding(port=80, service="http", banner="Apache httpd 2.4.7", state="open"),
+    ]
+    suggestions = engine.suggest_all(ports, [], target="10.10.10.5")
+    # Only the open HTTP port should produce suggestions; closed/filtered ports
+    # (e.g. from a real nmap scan of a mostly-closed host) must not.
+    assert suggestions
+    assert all(s.rule_id.startswith("http") or s.rule_id == "web-generic" for s in suggestions)
+    assert not any("vsftpd" in s.text.lower() or "backdoor" in s.text.lower() for s in suggestions)
+
+
+def test_suggest_all_includes_open_filtered_state(engine):
+    ports = [PortFinding(port=445, service="smb", banner="", state="open|filtered")]
+    suggestions = engine.suggest_all(ports, [], target="10.10.10.5")
+    assert any(s.rule_id == "smb-generic" for s in suggestions)
+
+
 def test_suggest_for_service_one_off_lookup(engine):
     suggestions = engine.suggest_for_service(service="smb", version="Samba 4.3.9", target="10.10.10.5")
     assert any(s.rule_id == "smb-generic" for s in suggestions)

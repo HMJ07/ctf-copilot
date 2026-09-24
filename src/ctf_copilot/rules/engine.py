@@ -113,6 +113,8 @@ class RuleEngine:
     ) -> list[Suggestion]:
         suggestions: list[Suggestion] = []
         for port_finding in ports:
+            if port_finding.state not in ("open", "open|filtered"):
+                continue
             suggestions.extend(self.suggest_for_port(port_finding, target))
         for path_finding in paths:
             suggestions.extend(self.suggest_for_path(path_finding, target))
