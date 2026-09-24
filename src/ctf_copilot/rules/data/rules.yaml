@@ -1,0 +1,303 @@
+# ctf-copilot rule set
+#
+# Two kinds of rules:
+#
+#   port_rules: matched against each open port/service finding.
+#     - id            unique slug
+#     - services      list of nmap/gobuster service names to match (lowercase)
+#     - ports         optional list of ports to additionally require
+#     - banner_regex  optional regex matched (case-insensitive) against the
+#                      product/version banner string reported by the scanner
+#     - suggestions   list of {text, command, priority (1-5, 5 = most urgent)}
+#                      text/command may use {target} and {port} placeholders
+#
+#   path_rules: matched against each discovered URL path.
+#     - id, path_regex (matched against the path), suggestions (same shape)
+#
+# See CONTRIBUTING.md for the full guide on adding rules.
+
+port_rules:
+  # ---------------------------------------------------------------- FTP ----
+  - id: ftp-generic
+    services: [ftp]
+    suggestions:
+      - text: "FTP is open. Try anonymous login and check for readable/writable dirs."
+        command: "ftp {target} {port}"
+        priority: 2
+      - text: "Brute-force FTP credentials if anonymous login fails."
+        command: "hydra -L users.txt -P rockyou.txt ftp://{target}:{port}"
+        priority: 1
+
+  - id: ftp-vsftpd-234-backdoor
+    services: [ftp]
+    banner_regex: "vsftpd\\s*2\\.3\\.4"
+    suggestions:
+      - text: "vsftpd 2.3.4 is vulnerable to the well-known backdoor (CVE-2011-2523): a ':)' smiley in the USER field opens a root shell on port 6200."
+        command: "msfconsole -q -x 'use exploit/unix/ftp/vsftpd_234_backdoor; set RHOSTS {target}; run'"
+        priority: 5
+
+  - id: ftp-proftpd-1.3.3c-backdoor
+    services: [ftp]
+    banner_regex: "proftpd\\s*1\\.3\\.3c"
+    suggestions:
+      - text: "ProFTPd 1.3.3c has a backdoored source release (trojaned tarball) giving a root shell."
+        command: "msfconsole -q -x 'use exploit/unix/ftp/proftpd_133c_backdoor; set RHOSTS {target}; run'"
+        priority: 5
+
+  # ---------------------------------------------------------------- SSH ----
+  - id: ssh-generic
+    services: [ssh]
+    suggestions:
+      - text: "SSH is open. Enumerate valid usernames and consider credential brute-force only if in scope."
+        command: "nmap -p {port} --script ssh-auth-methods,ssh2-enum-algos {target}"
+        priority: 1
+
+  - id: ssh-old-openssh
+    services: [ssh]
+    banner_regex: "OpenSSH\\s*[1-6]\\.[0-9]"
+    suggestions:
+      - text: "Old OpenSSH version detected. Check for known CVEs for this exact version (e.g. user enumeration, weak algorithms)."
+        command: "searchsploit openssh"
+        priority: 2
+
+  # ------------------------------------------------------------ Telnet ----
+  - id: telnet-generic
+    services: [telnet]
+    suggestions:
+      - text: "Telnet is open (cleartext protocol). Try default/blank credentials and banner-grab for device/OS hints."
+        command: "telnet {target} {port}"
+        priority: 3
+
+  # -------------------------------------------------------------- SMTP ----
+  - id: smtp-generic
+    services: [smtp]
+    suggestions:
+      - text: "SMTP is open. Enumerate valid usernames with VRFY/EXPN/RCPT TO."
+        command: "smtp-user-enum -M VRFY -U users.txt -t {target}"
+        priority: 2
+      - text: "Grab the banner manually; it often reveals the mail server product/version."
+        command: "nc -nv {target} {port}"
+        priority: 1
+
+  # --------------------------------------------------------------- DNS ----
+  - id: dns-generic
+    services: [dns, domain]
+    suggestions:
+      - text: "DNS is open. Attempt a zone transfer and enumerate common subdomains."
+        command: "dig axfr @{target} <domain>"
+        priority: 2
+
+  # ---------------------------------------------------------- HTTP/HTTPS --
+  - id: http-generic
+    services: [http, http-alt, http-proxy]
+    suggestions:
+      - text: "HTTP is open. Fingerprint the stack and start content discovery."
+        command: "whatweb http://{target}:{port}/ && gobuster dir -u http://{target}:{port}/ -w /usr/share/wordlists/dirb/common.txt"
+        priority: 2
+      - text: "Check for a robots.txt, sitemap.xml and common backup/config files."
+        command: "curl -s http://{target}:{port}/robots.txt"
+        priority: 1
+
+  - id: https-generic
+    services: [https, ssl/http]
+    suggestions:
+      - text: "HTTPS is open. Check the TLS certificate for hostnames/subdomains (SANs) and scan for weak TLS config."
+        command: "nmap -p {port} --script ssl-cert,ssl-enum-ciphers {target}"
+        priority: 2
+
+  - id: http-apache-outdated
+    services: [http, https]
+    banner_regex: "Apache(?:/| httpd )(?:1\\.|2\\.[0-3]\\.|2\\.4\\.(?:[0-9]|[1-4][0-9]))"
+    suggestions:
+      - text: "Outdated Apache detected — check for CVE-2021-41773/CVE-2021-42013 (path traversal/RCE, Apache <2.4.51) and other version-specific CVEs."
+        command: "searchsploit apache {port}"
+        priority: 3
+
+  - id: http-php-outdated
+    services: [http, https]
+    banner_regex: "PHP/[1-5]\\."
+    suggestions:
+      - text: "Outdated PHP detected. Look for known RCE/deserialization CVEs for this version."
+        command: "searchsploit php"
+        priority: 3
+
+  - id: http-iis-webdav
+    services: [http, https]
+    banner_regex: "(Microsoft-IIS|IIS)"
+    suggestions:
+      - text: "IIS detected. Check for WebDAV (PUT method upload) and short-name enumeration (IIS tilde vuln)."
+        command: "davtest -url http://{target}:{port}/"
+        priority: 2
+
+  # ---------------------------------------------------------------- SMB ---
+  - id: smb-generic
+    services: [smb, microsoft-ds, netbios-ssn]
+    suggestions:
+      - text: "SMB is open. Enumerate shares, users and OS info."
+        command: "enum4linux -a {target}"
+        priority: 3
+      - text: "List shares anonymously."
+        command: "smbclient -L //{target}/ -N"
+        priority: 2
+      - text: "Check for the MS17-010 (EternalBlue) vulnerability."
+        command: "nmap -p 445 --script smb-vuln-ms17-010 {target}"
+        priority: 3
+
+  - id: smb-old-samba
+    services: [smb, microsoft-ds, netbios-ssn]
+    banner_regex: "Samba.*3\\.[0-6]|Samba.*3\\.X"
+    suggestions:
+      - text: "Old Samba version detected. Check for CVE-2017-7494 (is_known_pipename RCE, Samba 3.5.0-4.6.4) and username map script RCE (CVE-2007-2447, Samba 3.0.20-3.0.25rc3)."
+        command: "msfconsole -q -x 'search samba; use exploit/multi/samba/usermap_script; set RHOSTS {target}; run'"
+        priority: 4
+
+  # --------------------------------------------------------------- RPC ----
+  - id: rpc-generic
+    services: [rpcbind, msrpc, nfs]
+    suggestions:
+      - text: "RPC/portmapper is open. Enumerate registered RPC services and NFS exports."
+        command: "rpcinfo -p {target} && showmount -e {target}"
+        priority: 2
+
+  # ------------------------------------------------------------- MSSQL ----
+  - id: mssql-generic
+    services: [mssql, ms-sql-s]
+    suggestions:
+      - text: "MSSQL is open. Try default 'sa' credentials and enumerate via xp_cmdshell if writable."
+        command: "python3 mssqlclient.py {target} -windows-auth"
+        priority: 2
+
+  # ------------------------------------------------------------- MySQL ----
+  - id: mysql-generic
+    services: [mysql]
+    suggestions:
+      - text: "MySQL is open. Try common/default credentials (root:root, root: blank) and check for anonymous access."
+        command: "mysql -h {target} -u root -p"
+        priority: 2
+
+  # -------------------------------------------------------- PostgreSQL ----
+  - id: postgres-generic
+    services: [postgresql]
+    suggestions:
+      - text: "PostgreSQL is open. Try default credentials (postgres:postgres) and check for trust authentication."
+        command: "psql -h {target} -U postgres"
+        priority: 2
+
+  # ----------------------------------------------------------------RDP ----
+  - id: rdp-generic
+    services: [rdp, ms-wbt-server]
+    suggestions:
+      - text: "RDP is open. Check for BlueKeep (CVE-2019-0708) on old Windows builds, and try credential spraying if in scope."
+        command: "nmap -p {port} --script rdp-vuln-ms12-020,rdp-enum-encryption {target}"
+        priority: 2
+
+  # -------------------------------------------------------------WinRM ----
+  - id: winrm-generic
+    services: [winrm, wsman]
+    suggestions:
+      - text: "WinRM is open. If you have valid domain creds, get a shell directly."
+        command: "evil-winrm -i {target} -u <user> -p <password>"
+        priority: 3
+
+  # -------------------------------------------------------------- SNMP ----
+  - id: snmp-generic
+    services: [snmp]
+    suggestions:
+      - text: "SNMP is open. Try the default 'public'/'private' community strings to walk the MIB tree."
+        command: "snmpwalk -v2c -c public {target}"
+        priority: 2
+
+  # -------------------------------------------------------------- LDAP ----
+  - id: ldap-generic
+    services: [ldap]
+    suggestions:
+      - text: "LDAP is open. Try an anonymous bind to enumerate the directory (users, groups, domain info)."
+        command: "ldapsearch -x -H ldap://{target} -s base namingcontexts"
+        priority: 2
+
+  # ------------------------------------------------------------- Redis ----
+  - id: redis-generic
+    services: [redis]
+    suggestions:
+      - text: "Redis is open. Check for unauthenticated access — it often allows writing an SSH key or webshell."
+        command: "redis-cli -h {target} ping"
+        priority: 3
+
+  # -------------------------------------------------------------- IMAP/POP
+  - id: mail-generic
+    services: [imap, pop3, imaps, pop3s]
+    suggestions:
+      - text: "Mail retrieval service is open. Try credentials recovered elsewhere and banner-grab for version info."
+        command: "nc -nv {target} {port}"
+        priority: 1
+
+path_rules:
+  - id: git-directory
+    path_regex: "\\.git(/|$)"
+    suggestions:
+      - text: "Exposed .git directory found — dump the repository to recover source code and history."
+        command: "git-dumper http://{target}{path} ./loot-git"
+        priority: 4
+
+  - id: env-file
+    path_regex: "\\.env$"
+    suggestions:
+      - text: "Exposed .env file found — likely contains secrets/credentials."
+        command: "curl -s http://{target}{path}"
+        priority: 4
+
+  - id: backup-files
+    path_regex: "\\.(bak|old|swp|orig|save|zip|tar|tar\\.gz|sql)$"
+    suggestions:
+      - text: "Backup/archive file found — download and inspect for source code, credentials or DB dumps."
+        command: "curl -sO http://{target}{path}"
+        priority: 3
+
+  - id: wp-login
+    path_regex: "wp-login\\.php$|wp-admin(/|$)"
+    suggestions:
+      - text: "WordPress detected. Enumerate plugins/themes/users and known CVEs."
+        command: "wpscan --url http://{target}/ --enumerate ap,u"
+        priority: 3
+
+  - id: phpmyadmin
+    path_regex: "phpmyadmin(/|$)"
+    suggestions:
+      - text: "phpMyAdmin found. Try default/blank credentials and check the version for known CVEs."
+        command: "searchsploit phpmyadmin"
+        priority: 3
+
+  - id: admin-panel
+    path_regex: "^/(admin|administrator|manage|management|cpanel|dashboard)(/|$)"
+    suggestions:
+      - text: "Admin panel found. Try default credentials and check for login brute-force/rate-limit gaps."
+        command: "hydra -l admin -P rockyou.txt http-post-form '{path}:username=^USER^&password=^PASS^:F=incorrect'"
+        priority: 2
+
+  - id: upload-endpoint
+    path_regex: "upload"
+    suggestions:
+      - text: "Possible file upload endpoint. Test for unrestricted upload / extension bypass leading to RCE."
+        command: "curl -F 'file=@shell.php.jpg' http://{target}{path}"
+        priority: 2
+
+  - id: api-endpoint
+    path_regex: "^/api(/|$)"
+    suggestions:
+      - text: "API endpoint found. Check for an OpenAPI/Swagger spec and test for IDOR/auth bypass on each route."
+        command: "curl -s http://{target}{path}"
+        priority: 1
+
+  - id: config-file
+    path_regex: "(web\\.config|config\\.php|configuration\\.php|settings\\.py)$"
+    suggestions:
+      - text: "Config file exposed — may leak DB credentials or secret keys if served as plaintext instead of executed."
+        command: "curl -s http://{target}{path}"
+        priority: 3
+
+  - id: generic-interesting-file
+    path_regex: "\\.(txt|log|xml|json|yml|yaml)$"
+    suggestions:
+      - text: "Data/log file found — worth a manual look for leaked info (credentials, internal paths, stack traces)."
+        command: "curl -s http://{target}{path}"
+        priority: 1
